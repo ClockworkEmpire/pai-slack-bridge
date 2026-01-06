@@ -85,3 +85,40 @@ export function truncateForSlack(text: string, maxLength = 39000): string {
   if (text.length <= maxLength) return text;
   return text.slice(0, maxLength) + '\n\n... _(truncated)_';
 }
+
+/**
+ * Split long text into chunks for multiple messages
+ */
+export function splitForSlack(text: string, maxLength = 3500): string[] {
+  if (text.length <= maxLength) return [text];
+
+  const chunks: string[] = [];
+  let remaining = text;
+
+  while (remaining.length > 0) {
+    if (remaining.length <= maxLength) {
+      chunks.push(remaining);
+      break;
+    }
+
+    // Try to split at a double newline (paragraph break)
+    let splitPoint = remaining.lastIndexOf('\n\n', maxLength);
+    if (splitPoint < maxLength / 2) {
+      // Try single newline
+      splitPoint = remaining.lastIndexOf('\n', maxLength);
+    }
+    if (splitPoint < maxLength / 2) {
+      // No good newline found, split at space
+      splitPoint = remaining.lastIndexOf(' ', maxLength);
+    }
+    if (splitPoint < maxLength / 2) {
+      // No good split point, just cut
+      splitPoint = maxLength;
+    }
+
+    chunks.push(remaining.slice(0, splitPoint));
+    remaining = remaining.slice(splitPoint).trim();
+  }
+
+  return chunks;
+}

@@ -24,13 +24,16 @@ export function getSlackClient(): WebClient {
 export async function postMessage(
   channel: string,
   text: string,
-  threadTs?: string
+  threadTs?: string,
+  raw = false
 ): Promise<{ ts: string; channel: string }> {
   const client = getSlackClient();
 
+  const processedText = raw ? text : truncateForSlack(markdownToSlack(stripSystemReminders(text)));
+
   const result = await client.chat.postMessage({
     channel,
-    text: truncateForSlack(markdownToSlack(stripSystemReminders(text))),
+    text: processedText,
     thread_ts: threadTs,
   });
 
@@ -47,15 +50,36 @@ export async function postMessage(
 export async function updateMessage(
   channel: string,
   ts: string,
-  text: string
+  text: string,
+  raw = false
 ): Promise<void> {
   const client = getSlackClient();
+  let processedText = raw ? text : truncateForSlack(markdownToSlack(stripSystemReminders(text)));
 
-  await client.chat.update({
-    channel,
-    ts,
-    text: truncateForSlack(markdownToSlack(stripSystemReminders(text))),
-  });
+  try {
+    await client.chat.update({
+      channel,
+      ts,
+      text: processedText,
+    });
+  } catch (error: unknown) {
+    // Handle msg_too_long by aggressive truncation
+    if (error && typeof error === 'object' && 'data' in error) {
+      const slackError = error as { data?: { error?: string } };
+      if (slackError.data?.error === 'msg_too_long') {
+        console.log(`[Slack] Message too long (${processedText.length} chars), truncating...`);
+        // Aggressively truncate to 3500 chars (safe limit)
+        processedText = processedText.slice(0, 3500) + '\n\n... _(message truncated - too long for Slack)_';
+        await client.chat.update({
+          channel,
+          ts,
+          text: processedText,
+        });
+        return;
+      }
+    }
+    throw error;
+  }
 }
 
 /**

@@ -1,7 +1,10 @@
 // Handle incoming Slack messages
 import { getOrCreateSession } from '../services/session';
 import { executeClaudeStreaming, extractText, type StreamEvent } from '../services/claude';
-import { postMessage, addReaction, removeReaction, getToolEmoji, MessageUpdater } from '../services/slack';
+import { postMessage, addReaction, removeReaction, getToolEmoji, MessageUpdater, updateMessage } from '../services/slack';
+import { splitForSlack, markdownToSlack, stripSystemReminders } from '../lib/markdown-to-slack';
+
+const MAX_SLACK_MESSAGE_LENGTH = 3500;
 
 interface SlackMessage {
   type: string;
@@ -69,8 +72,25 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
       }
     }
 
-    // Final flush
-    await updater.flush();
+    // Handle long responses by splitting into multiple messages
+    const finalText = updater.getText();
+    const processedText = markdownToSlack(stripSystemReminders(finalText));
+
+    if (processedText.length > MAX_SLACK_MESSAGE_LENGTH) {
+      console.log(`[Handler] Response too long (${processedText.length} chars), splitting...`);
+      const chunks = splitForSlack(processedText, MAX_SLACK_MESSAGE_LENGTH);
+
+      // Update first message with first chunk (raw=true since already processed)
+      await updateMessage(channel, initialMessage.ts, chunks[0], true);
+
+      // Post remaining chunks as follow-up messages (raw=true since already processed)
+      for (let i = 1; i < chunks.length; i++) {
+        await postMessage(channel, chunks[i], threadTs, true);
+      }
+    } else {
+      // Normal flush for short messages
+      await updater.flush();
+    }
 
     // Remove thinking reaction, add checkmark
     await removeReaction(channel, ts, 'hourglass_flowing_sand');
