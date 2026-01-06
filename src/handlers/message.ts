@@ -74,22 +74,26 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
 
     // Handle long responses by splitting into multiple messages
     const finalText = updater.getText();
-    const processedText = markdownToSlack(stripSystemReminders(finalText));
 
-    if (processedText.length > MAX_SLACK_MESSAGE_LENGTH) {
-      console.log(`[Handler] Response too long (${processedText.length} chars), splitting...`);
-      const chunks = splitForSlack(processedText, MAX_SLACK_MESSAGE_LENGTH);
-
-      // Update first message with first chunk (raw=true since already processed)
-      await updateMessage(channel, initialMessage.ts, chunks[0], true);
-
-      // Post remaining chunks as follow-up messages (raw=true since already processed)
-      for (let i = 1; i < chunks.length; i++) {
-        await postMessage(channel, chunks[i], threadTs, true);
-      }
+    if (!finalText) {
+      await updateMessage(channel, initialMessage.ts, ':warning: No response received from Claude');
     } else {
-      // Normal flush for short messages
-      await updater.flush();
+      const processedText = markdownToSlack(stripSystemReminders(finalText));
+
+      if (processedText.length > MAX_SLACK_MESSAGE_LENGTH) {
+        console.log(`[Handler] Response too long (${processedText.length} chars), splitting into multiple messages`);
+        const chunks = splitForSlack(processedText, MAX_SLACK_MESSAGE_LENGTH);
+
+        // Update first message with first chunk
+        await updateMessage(channel, initialMessage.ts, chunks[0], true);
+
+        // Post remaining chunks as follow-up messages
+        for (let i = 1; i < chunks.length; i++) {
+          await postMessage(channel, chunks[i], threadTs, true);
+        }
+      } else {
+        await updateMessage(channel, initialMessage.ts, processedText, true);
+      }
     }
 
     // Remove thinking reaction, add checkmark
