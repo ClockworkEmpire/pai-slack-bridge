@@ -112,6 +112,13 @@ app.message(async ({ message, say }) => {
   // Skip bot messages
   if (msg.bot_id) return;
 
+  // Skip @mentions in channels - they're handled by app_mention
+  // (DMs don't have @mentions so always process those)
+  const isDirectMessage = isDM(msg.channel_type || '');
+  if (!isDirectMessage && botUserId && msg.text.includes(`<@${botUserId}>`)) {
+    return; // Will be handled by app_mention handler
+  }
+
   // Check if user is allowed
   if (!isAllowedUser(msg.user)) {
     console.log(`[Bridge] Ignoring message from non-allowed user: ${msg.user}`);
@@ -119,7 +126,6 @@ app.message(async ({ message, say }) => {
   }
 
   // Check if DM or allowed channel
-  const isDirectMessage = isDM(msg.channel_type || '');
   if (!isDirectMessage && !isAllowedChannel(msg.channel)) {
     console.log(`[Bridge] Ignoring message in non-allowed channel: ${msg.channel}`);
     return;
