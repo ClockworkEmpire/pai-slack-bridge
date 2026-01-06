@@ -54,10 +54,22 @@ export async function* executeClaudeStreaming(
   const settingsPath = `${paiDir}/settings.json`;
 
   // Reinforce structured output format for Slack responses
-  const slackSystemPrompt = `IMPORTANT: You are responding via Slack. ALWAYS use the structured output format from CORE for your final response:
-- Include all sections: SUMMARY, ANALYSIS, ACTIONS, RESULTS, STATUS, CAPTURE, NEXT, STORY EXPLANATION, COMPLETED
-- The COMPLETED line is critical - it will be spoken aloud
-- Keep COMPLETED to 8-12 words, describing what finished (not "Completed...")`;
+  const slackSystemPrompt = `CRITICAL OVERRIDE - SLACK CHANNEL RESPONSE FORMAT:
+
+You are responding via the PAI Slack Bridge. The "short and concise" CLI instruction does NOT apply here.
+
+MANDATORY: Use the CORE structured output format for EVERY response, regardless of complexity:
+- Simple questions: USE STRUCTURED FORMAT
+- "I can't do that" responses: USE STRUCTURED FORMAT
+- Greetings: USE STRUCTURED FORMAT
+- Everything: USE STRUCTURED FORMAT
+
+Required sections for ALL responses:
+📋 SUMMARY | 🔍 ANALYSIS | ⚡ ACTIONS | ✅ RESULTS | 📊 STATUS | 📁 CAPTURE | ➡️ NEXT | 📖 STORY EXPLANATION | 🎯 COMPLETED
+
+The 🎯 COMPLETED line is spoken aloud via voice synthesis. Keep it 8-12 words, never start with "Completed".
+
+This is a CONSTITUTIONAL requirement. No exceptions.`;
 
   const args = [
     '-p',
