@@ -3,7 +3,6 @@
 // Bidirectional Slack <-> Claude Code integration
 
 import { existsSync, readFileSync } from 'fs';
-import { dirname, join } from 'path';
 
 /**
  * Load environment variables from a .env file
@@ -29,17 +28,9 @@ function loadEnvFile(path: string): boolean {
   return true;
 }
 
-// Try loading .env from multiple locations (first found wins)
-const scriptDir = dirname(Bun.main);
-const projectDir = dirname(scriptDir);
-const envLocations = [
-  join(projectDir, '.env'),                              // Project root
-  `${process.env.HOME}/.claude/.env`,                    // PAI directory
-];
-
-for (const envPath of envLocations) {
-  if (loadEnvFile(envPath)) break;
-}
+// Load .env from PAI_DIR (default: ~/.claude)
+const paiDir = process.env.PAI_DIR || `${process.env.HOME}/.claude`;
+loadEnvFile(`${paiDir}/.env`);
 
 import { App, LogLevel } from '@slack/bolt';
 import { handleMessage, handleMention } from './handlers/message';
@@ -60,7 +51,8 @@ const ALLOWED_CHANNELS = process.env.BRIDGE_ALLOWED_CHANNELS?.split(',').map(s =
 const ALLOWED_USERS = process.env.BRIDGE_ALLOWED_USERS?.split(',').map(s => s.trim()).filter(Boolean) || [];
 
 console.log('Starting PAI Slack Bridge...');
-console.log(`  Claude CWD: ${process.env.BRIDGE_DEFAULT_CWD || process.env.HOME}`);
+console.log(`  PAI_DIR: ${paiDir}`);
+console.log(`  Claude CWD: ${process.env.BRIDGE_DEFAULT_CWD || paiDir}`);
 console.log(`  Allowed channels: ${ALLOWED_CHANNELS.length ? ALLOWED_CHANNELS.join(', ') : 'all'}`);
 console.log(`  Allowed users: ${ALLOWED_USERS.length ? ALLOWED_USERS.join(', ') : 'all'}`);
 

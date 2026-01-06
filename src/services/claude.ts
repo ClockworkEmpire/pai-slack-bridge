@@ -48,7 +48,8 @@ export async function* executeClaudeStreaming(
   message: string,
   options: ClaudeOptions
 ): AsyncGenerator<StreamEvent> {
-  const cwd = options.cwd || process.env.BRIDGE_DEFAULT_CWD || process.env.HOME || '.';
+  const paiDir = process.env.PAI_DIR || `${process.env.HOME}/.claude`;
+  const cwd = options.cwd || process.env.BRIDGE_DEFAULT_CWD || paiDir;
 
   const args = [
     '-p',
