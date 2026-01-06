@@ -51,12 +51,15 @@ export async function* executeClaudeStreaming(
   const paiDir = process.env.PAI_DIR || `${process.env.HOME}/.claude`;
   const cwd = options.cwd || process.env.BRIDGE_DEFAULT_CWD || paiDir;
 
+  const settingsPath = `${paiDir}/settings.json`;
+
   const args = [
     '-p',
     '--output-format', 'stream-json',
     '--verbose',
     '--model', options.model || 'sonnet',
     '--permission-mode', options.permissionMode || 'acceptEdits',
+    '--settings', settingsPath,
   ];
 
   // Session handling: resume existing or start new with specific ID
@@ -71,10 +74,14 @@ export async function* executeClaudeStreaming(
 
   console.log(`[Claude] Spawning: claude ${args.join(' ')}`);
   console.log(`[Claude] CWD: ${cwd}`);
+  console.log(`[Claude] PAI_DIR: ${paiDir}`);
 
   const proc = spawn(['claude', ...args], {
     cwd,
-    env: process.env,
+    env: {
+      ...process.env,
+      PAI_DIR: paiDir,  // Ensure PAI_DIR is set for hooks
+    },
     stdout: 'pipe',
     stderr: 'pipe',
   });
