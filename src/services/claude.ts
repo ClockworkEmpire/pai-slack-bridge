@@ -1,0 +1,169 @@
+// Claude CLI spawner: executes claude in headless mode and streams output
+import { spawn, type Subprocess } from 'bun';
+
+export interface ClaudeOptions {
+  sessionId?: string;   // For new sessions
+  resumeId?: string;    // For resuming existing sessions
+  cwd?: string;
+  model?: string;
+  permissionMode?: string;
+}
+
+export interface StreamEvent {
+  type: 'system' | 'assistant' | 'user' | 'tool_use' | 'tool_result' | 'result';
+  subtype?: string;
+  session_id?: string;
+  message?: {
+    role?: string;
+    content?: ContentBlock[];
+  };
+  tool?: string;
+  tool_input?: unknown;
+  result?: string;
+  is_error?: boolean;
+  cost_usd?: number;
+}
+
+export interface ContentBlock {
+  type: string;
+  text?: string;
+  content?: string;
+}
+
+/**
+ * Extract text from content blocks
+ */
+export function extractText(content: ContentBlock[] | undefined): string {
+  if (!content) return '';
+  return content
+    .map(block => block.text || block.content || '')
+    .join('')
+    .trim();
+}
+
+/**
+ * Execute Claude CLI and yield streaming events
+ */
+export async function* executeClaudeStreaming(
+  message: string,
+  options: ClaudeOptions
+): AsyncGenerator<StreamEvent> {
+  const cwd = options.cwd || process.env.BRIDGE_DEFAULT_CWD || process.env.HOME || '.';
+
+  const args = [
+    '-p',
+    '--output-format', 'stream-json',
+    '--verbose',
+    '--model', options.model || 'sonnet',
+    '--permission-mode', options.permissionMode || 'acceptEdits',
+  ];
+
+  // Session handling: resume existing or start new with specific ID
+  if (options.resumeId) {
+    args.push('--resume', options.resumeId);
+  } else if (options.sessionId) {
+    args.push('--session-id', options.sessionId);
+  }
+
+  // Add the message
+  args.push(message);
+
+  console.log(`[Claude] Spawning: claude ${args.join(' ')}`);
+  console.log(`[Claude] CWD: ${cwd}`);
+
+  const proc = spawn(['claude', ...args], {
+    cwd,
+    env: process.env,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+
+  // Read stdout line by line
+  const reader = proc.stdout.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // Process complete lines
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+
+        try {
+          const event: StreamEvent = JSON.parse(line);
+          yield event;
+        } catch {
+          // Skip non-JSON lines (like verbose output)
+          console.log(`[Claude] Non-JSON: ${line.slice(0, 100)}`);
+        }
+      }
+    }
+
+    // Process any remaining buffer
+    if (buffer.trim()) {
+      try {
+        const event: StreamEvent = JSON.parse(buffer);
+        yield event;
+      } catch {
+        console.log(`[Claude] Final non-JSON: ${buffer.slice(0, 100)}`);
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  // Wait for process to complete
+  const exitCode = await proc.exited;
+  console.log(`[Claude] Process exited with code: ${exitCode}`);
+
+  // Check stderr for errors
+  const stderrReader = proc.stderr.getReader();
+  let stderr = '';
+  try {
+    while (true) {
+      const { done, value } = await stderrReader.read();
+      if (done) break;
+      stderr += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    stderrReader.releaseLock();
+  }
+
+  if (stderr) {
+    console.error(`[Claude] Stderr: ${stderr}`);
+  }
+}
+
+/**
+ * Execute Claude CLI and return full response (non-streaming)
+ */
+export async function executeClaude(
+  message: string,
+  options: ClaudeOptions
+): Promise<{ text: string; sessionId?: string; costUsd?: number }> {
+  let fullText = '';
+  let sessionId: string | undefined;
+  let costUsd: number | undefined;
+
+  for await (const event of executeClaudeStreaming(message, options)) {
+    if (event.type === 'assistant' && event.message?.content) {
+      fullText += extractText(event.message.content);
+    }
+    if (event.session_id) {
+      sessionId = event.session_id;
+    }
+    if (event.type === 'result' && event.cost_usd) {
+      costUsd = event.cost_usd;
+    }
+  }
+
+  return { text: fullText, sessionId, costUsd };
+}
