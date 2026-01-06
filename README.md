@@ -1,6 +1,6 @@
 # PAI Slack Bridge
 
-Bidirectional Slack integration for Claude Code. Chat with Claude Code sessions through Slack threads with full [PAI](https://github.com/danielmiessler/Personal_AI_Infrastructure) skill and hook support.
+Bidirectional Slack integration for [PAI](https://github.com/danielmiessler/Personal_AI_Infrastructure). Chat with PAI sessions through Slack threads with full skill and hook support.
 
 ## What Is This?
 
