@@ -1,0 +1,14 @@
+[Unit]
+Description=PAI Slack Bridge
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/jjn/github/pai-slack-bridge
+ExecStart=/home/jjn/.bun/bin/bun run start
+Restart=on-failure
+RestartSec=5
+Environment=PAI_DIR=/home/jjn/.claude
+
+[Install]
+WantedBy=default.target
