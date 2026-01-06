@@ -53,6 +53,12 @@ export async function* executeClaudeStreaming(
 
   const settingsPath = `${paiDir}/settings.json`;
 
+  // Reinforce structured output format for Slack responses
+  const slackSystemPrompt = `IMPORTANT: You are responding via Slack. ALWAYS use the structured output format from CORE for your final response:
+- Include all sections: SUMMARY, ANALYSIS, ACTIONS, RESULTS, STATUS, CAPTURE, NEXT, STORY EXPLANATION, COMPLETED
+- The COMPLETED line is critical - it will be spoken aloud
+- Keep COMPLETED to 8-12 words, describing what finished (not "Completed...")`;
+
   const args = [
     '-p',
     '--output-format', 'stream-json',
@@ -60,6 +66,7 @@ export async function* executeClaudeStreaming(
     '--model', options.model || 'sonnet',
     '--permission-mode', options.permissionMode || 'acceptEdits',
     '--settings', settingsPath,
+    '--append-system-prompt', slackSystemPrompt,
   ];
 
   // Session handling: resume existing or start new with specific ID
