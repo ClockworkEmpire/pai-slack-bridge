@@ -1,10 +1,12 @@
 # PAI Slack Bridge
 
-Bidirectional Slack integration for Claude Code. Chat with Claude Code sessions through Slack threads with full PAI skill and hook support.
+Bidirectional Slack integration for Claude Code. Chat with Claude Code sessions through Slack threads with full [PAI](https://github.com/danielmiessler/Personal_AI_Infrastructure) skill and hook support.
 
 ## What Is This?
 
 PAI Slack Bridge connects Slack to Claude Code, allowing you to interact with Claude through Slack messages instead of (or in addition to) the command line. Each Slack thread becomes a persistent Claude Code session that you can resume at any time.
+
+**Works with [Personal AI Infrastructure (PAI)](https://github.com/danielmiessler/Personal_AI_Infrastructure)** for the full experience—skills, hooks, custom contexts, and response formats all carry over. Also works with vanilla Claude Code, but some features (like structured responses and custom skills) won't be available.
 
 ## Why Use This?
 
@@ -158,7 +160,17 @@ Then:
 
 ## Configuration
 
-Set these in `~/.claude/.env`:
+The bridge loads its configuration from `$PAI_DIR/.env` (defaults to `~/.claude/.env`).
+
+**Important:** If your PAI installation is not at `~/.claude`, set `PAI_DIR` in your shell environment before running:
+
+```bash
+export PAI_DIR=/path/to/your/pai
+```
+
+### Environment Variables
+
+Set these in `$PAI_DIR/.env`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -168,7 +180,12 @@ Set these in `~/.claude/.env`:
 | `BRIDGE_DEFAULT_CWD` | `$PAI_DIR` | Working directory for Claude sessions |
 | `BRIDGE_ALLOWED_CHANNELS` | (all) | Comma-separated channel IDs |
 | `BRIDGE_ALLOWED_USERS` | (all) | Comma-separated Slack user IDs |
-| `PAI_DIR` | `~/.claude` | PAI installation directory |
+
+Set this in your shell environment (or systemd service):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PAI_DIR` | `~/.claude` | PAI installation directory (where .env lives) |
 
 ### Restricting Access
 
@@ -219,11 +236,17 @@ systemctl --user disable pai-slack-bridge   # Disable autostart
 ```bash
 mkdir -p ~/.config/systemd/user
 cp pai-slack-bridge.service ~/.config/systemd/user/
+
+# Edit the service file if PAI_DIR is not ~/.claude
+# nano ~/.config/systemd/user/pai-slack-bridge.service
+
 systemctl --user daemon-reload
 systemctl --user enable pai-slack-bridge
 systemctl --user start pai-slack-bridge
 sudo loginctl enable-linger $USER
 ```
+
+**Note:** The service file sets `PAI_DIR`. Edit it if your PAI installation is not at `~/.claude`.
 
 ### macOS
 
