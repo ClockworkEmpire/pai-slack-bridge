@@ -4,11 +4,11 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/jjn/github/pai-slack-bridge
-ExecStart=/home/jjn/.bun/bin/bun run start
+WorkingDirectory=%h/github/pai-slack-bridge
+ExecStart=/bin/bash -lc 'bun run start'
 Restart=on-failure
 RestartSec=5
-Environment=PAI_DIR=/home/jjn/.claude
+Environment=PAI_DIR=%h/.claude
 
 [Install]
 WantedBy=default.target
