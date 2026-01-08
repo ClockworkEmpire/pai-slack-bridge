@@ -35,6 +35,7 @@ loadEnvFile(`${paiDir}/.env`);
 import { App, LogLevel } from '@slack/bolt';
 import { handleMessage, handleMention } from './handlers/message';
 import { cleanupOldSessions } from './services/session';
+import { getFileWatcher } from './services/file-watcher';
 
 // Validate environment
 const requiredEnvVars = ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN'];
@@ -142,6 +143,12 @@ app.message(async ({ message, say }) => {
 app.event('app_mention', async ({ event }) => {
   const { text, user, channel, ts, thread_ts } = event;
 
+  // Ensure we have a user
+  if (!user) {
+    console.log('[Bridge] Ignoring mention without user');
+    return;
+  }
+
   // Check if user is allowed
   if (!isAllowedUser(user)) {
     console.log(`[Bridge] Ignoring mention from non-allowed user: ${user}`);
@@ -152,7 +159,7 @@ app.event('app_mention', async ({ event }) => {
   console.log(`[Bridge] Mentioned by ${user} in ${channel}`);
 
   try {
-    await handleMention(text, user, channel, ts, thread_ts);
+    await handleMention(text, user, channel, ts, thread_ts ?? undefined);
   } catch (error) {
     console.error('[Bridge] Error handling mention:', error);
   }
@@ -177,6 +184,11 @@ setInterval(() => {
     botUserId = authResult.user_id || null;
     console.log(`Bot user ID: ${botUserId}`);
 
+    // Start file watcher for asset uploads
+    const fileWatcher = getFileWatcher();
+    await fileWatcher.start();
+    console.log(`File watcher active: ${fileWatcher.getWatchedDirectories().join(', ')}`);
+
   } catch (error) {
     console.error('Failed to start bridge:', error);
     process.exit(1);
@@ -186,12 +198,14 @@ setInterval(() => {
 // Graceful shutdown
 process.on('SIGINT', async () => {
   console.log('\nShutting down...');
+  getFileWatcher().stop();
   await app.stop();
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
   console.log('\nShutting down...');
+  getFileWatcher().stop();
   await app.stop();
   process.exit(0);
 });

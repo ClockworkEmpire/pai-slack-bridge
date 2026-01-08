@@ -3,6 +3,12 @@ import { getOrCreateSession } from '../services/session';
 import { executeClaudeStreaming, extractText, type StreamEvent } from '../services/claude';
 import { postMessage, addReaction, removeReaction, getToolEmoji, MessageUpdater, updateMessage } from '../services/slack';
 import { splitForSlack, markdownToSlack, stripSystemReminders } from '../lib/markdown-to-slack';
+import { getChannelConfig, isChannelEnabled } from '../services/channel-config';
+import { checkRateLimits, recordUsage } from '../services/usage-tracker';
+import { classifyRequest, isRequestAllowed, getCategoryDisplayName } from '../middleware/classifier';
+import { buildGuardrailedPrompt, validateMessage, buildRejectionMessage, buildRateLimitMessage } from '../services/prompt-builder';
+import { getFileWatcher, getPendingFiles, clearPendingFiles } from '../services/file-watcher';
+import { uploadFilesToThread, filterAllowedFiles } from '../services/file-uploader';
 
 const MAX_SLACK_MESSAGE_LENGTH = 3500;
 
@@ -33,6 +39,57 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
 
   console.log(`[Handler] Message from ${user} in ${channel}: ${text.slice(0, 50)}...`);
 
+  // Check if channel has team mode config
+  const channelConfig = getChannelConfig(channel);
+  const isTeamMode = isChannelEnabled(channel);
+
+  let messageToSend = text;
+  let classificationResult = null;
+
+  // Team mode: apply classification, guardrails, and rate limits
+  if (isTeamMode) {
+    console.log(`[Handler] Team mode active for channel ${channelConfig.channelName}`);
+
+    // Classify the request
+    classificationResult = classifyRequest(text);
+    console.log(`[Handler] Classified as: ${classificationResult.category} (${(classificationResult.confidence * 100).toFixed(0)}% confidence)`);
+
+    // Check if request type is allowed for this channel
+    const allowCheck = isRequestAllowed(classificationResult, channelConfig.capabilities);
+    if (!allowCheck.allowed) {
+      await postMessage(channel, buildRejectionMessage(allowCheck.reason!), threadTs);
+      return;
+    }
+
+    // Check rate limits
+    const rateCheck = checkRateLimits(user, channel, channelConfig);
+    if (!rateCheck.allowed) {
+      await postMessage(channel, buildRateLimitMessage(rateCheck.reason!), threadTs);
+      return;
+    }
+
+    // Validate against blocked patterns
+    const validation = validateMessage(text, channelConfig.blockedPatterns || []);
+    if (!validation.valid) {
+      await postMessage(
+        channel,
+        buildRejectionMessage(`Request contains blocked patterns: ${validation.violations.join(', ')}`),
+        threadTs
+      );
+      return;
+    }
+
+    // Build guardrailed prompt
+    messageToSend = buildGuardrailedPrompt({
+      channelConfig,
+      taskCategory: classificationResult.category,
+      userName: user,
+      originalMessage: text,
+    });
+
+    console.log(`[Handler] Using guardrailed prompt for ${getCategoryDisplayName(classificationResult.category)} task`);
+  }
+
   // Get or create session for this thread
   const { session, isNew } = getOrCreateSession(channel, threadTs, user);
   console.log(`[Handler] Session: ${session.sessionId} (${isNew ? 'new' : 'existing'})`);
@@ -50,12 +107,24 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
   // Create message updater for streaming
   const updater = new MessageUpdater(channel, initialMessage.ts);
 
+  const startTime = Date.now();
+  let costUsd = 0;
+  let uploadedFileIds: string[] = [];
+
+  // Set up file watcher if auto-upload is enabled for this channel
+  const fileWatcher = getFileWatcher();
+  if (isTeamMode && channelConfig.autoUploadAssets) {
+    clearPendingFiles();
+    fileWatcher.setActiveSession(channel, threadTs, session.sessionId);
+    console.log('[Handler] File watcher activated for this request');
+  }
+
   try {
     let fullText = '';
     let toolsUsed: Set<string> = new Set();
 
     // Execute Claude and stream responses
-    for await (const event of executeClaudeStreaming(text, {
+    for await (const event of executeClaudeStreaming(messageToSend, {
       resumeId: isNew ? undefined : session.sessionId,
       sessionId: isNew ? session.sessionId : undefined,
     })) {
@@ -69,6 +138,11 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
           updater.setText(fullText);
           await updater.append(''); // Trigger update check
         }
+      }
+
+      // Capture cost from result event
+      if (event.type === 'result' && event.cost_usd) {
+        costUsd = event.cost_usd;
       }
     }
 
@@ -100,6 +174,57 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
     await removeReaction(channel, ts, 'hourglass_flowing_sand');
     await addReaction(channel, ts, 'white_check_mark');
 
+    // Upload any files generated during execution
+    if (isTeamMode && channelConfig.autoUploadAssets) {
+      fileWatcher.clearActiveSession();
+
+      // Small delay to catch any final file writes
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      const pendingFiles = getPendingFiles();
+      if (pendingFiles.length > 0) {
+        console.log(`[Handler] Found ${pendingFiles.length} files to upload`);
+
+        // Filter by allowed types
+        const { allowed, rejected } = filterAllowedFiles(pendingFiles, channelConfig);
+        if (rejected.length > 0) {
+          console.log(`[Handler] Rejected ${rejected.length} files (type/size restrictions)`);
+        }
+
+        if (allowed.length > 0) {
+          // Add uploading indicator
+          await addReaction(channel, initialMessage.ts, 'file_folder');
+
+          const results = await uploadFilesToThread(allowed, channelConfig);
+
+          // Collect successful file IDs
+          for (const [fileId, result] of results) {
+            if (result.success && result.slackFileId) {
+              uploadedFileIds.push(result.slackFileId);
+            }
+          }
+
+          await removeReaction(channel, initialMessage.ts, 'file_folder');
+        }
+      }
+    }
+
+    // Record usage for team mode
+    if (isTeamMode && classificationResult) {
+      recordUsage({
+        userId: user,
+        channelId: channel,
+        timestamp: new Date().toISOString(),
+        category: classificationResult.category,
+        tokensUsed: 0, // TODO: extract from Claude response if available
+        costUsd,
+        sessionId: session.sessionId,
+        filesUploaded: uploadedFileIds,
+        duration: Date.now() - startTime,
+      });
+      console.log(`[Handler] Usage recorded: $${costUsd.toFixed(4)}, ${Date.now() - startTime}ms, ${uploadedFileIds.length} files`);
+    }
+
   } catch (error) {
     console.error('[Handler] Error:', error);
 
@@ -113,6 +238,11 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
 
   } finally {
     updater.cleanup();
+    // Always clear file watcher session
+    if (isTeamMode && channelConfig.autoUploadAssets) {
+      fileWatcher.clearActiveSession();
+      clearPendingFiles();
+    }
   }
 }
 

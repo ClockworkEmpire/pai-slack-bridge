@@ -300,6 +300,82 @@ Ensure `PAI_DIR` points to your PAI installation (default: `~/.claude`)
 
 ---
 
+## Team Mode (Guardrails & Asset Delivery)
+
+For exposing Claude to team members with controlled access, the bridge supports **Team Mode**—a guardrailed experience with task classification, rate limiting, and automatic asset uploads.
+
+### Enabling Team Mode
+
+Create or edit `~/.claude/bridge/data/channels.json`:
+
+```json
+{
+  "channels": {
+    "C0MARKETING": {
+      "channelId": "C0MARKETING",
+      "channelName": "marketing-ai",
+      "enabled": true,
+      "capabilities": [
+        { "name": "copy", "enabled": true },
+        { "name": "briefs", "enabled": true },
+        { "name": "visuals", "enabled": true },
+        { "name": "research", "enabled": true }
+      ],
+      "systemPromptPrefix": "You are helping the marketing team. Focus on content creation tasks.",
+      "blockedPatterns": ["rm -rf", "sudo", "DELETE FROM"],
+      "rateLimits": {
+        "requestsPerHour": 20,
+        "requestsPerDay": 100,
+        "tokensPerDay": 500000
+      },
+      "maxCostPerDay": 25.00,
+      "autoUploadAssets": true,
+      "allowedFileTypes": ["png", "pdf", "md"],
+      "maxFileSizeMb": 25
+    }
+  },
+  "defaultConfig": {
+    "enabled": false
+  }
+}
+```
+
+### Features
+
+**Task Classification**: Incoming requests are automatically classified into categories:
+- `copy` - Headlines, blog posts, email drafts, ad copy
+- `briefs` - Content briefs, outlines, strategies
+- `visuals` - Infographics, diagrams, images
+- `research` - KB searches, analysis, summaries
+
+**Guardrails**:
+- `capabilities` - Enable/disable task categories per channel
+- `blockedPatterns` - Reject requests containing dangerous patterns
+- `systemPromptPrefix` - Inject channel-specific instructions
+- `rateLimits` - Per-hour/day request limits
+- `maxCostPerDay` - Cost ceiling per channel
+
+**Asset Upload**: When `autoUploadAssets: true`:
+- Files generated in `~/Downloads/` or `~/.claude/kb/` are detected
+- Allowed file types are automatically uploaded to the Slack thread
+- Enables seamless infographic and document delivery
+
+**Usage Tracking**: All requests are logged to `~/.claude/bridge/data/usage.json`:
+- Per-user and per-channel statistics
+- Cost tracking
+- Rate limit enforcement
+
+### File Upload Scope
+
+To enable file uploads, add `files:write` to your Slack app's Bot Token Scopes:
+
+1. Go to https://api.slack.com/apps → Your App
+2. **Features → OAuth & Permissions**
+3. Add `files:write` to Bot Token Scopes
+4. **Reinstall the app** to apply the new scope
+
+---
+
 ## Architecture
 
 ```
@@ -308,14 +384,27 @@ pai-slack-bridge/
 │   ├── index.ts              # Entry point, Socket Mode server
 │   ├── handlers/
 │   │   └── message.ts        # Message and @mention handling
+│   ├── middleware/
+│   │   └── classifier.ts     # Task classification (Team Mode)
 │   ├── services/
 │   │   ├── claude.ts         # Claude CLI spawner with streaming
 │   │   ├── session.ts        # Thread ↔ Session mapping
-│   │   └── slack.ts          # Slack API wrapper
+│   │   ├── slack.ts          # Slack API wrapper
+│   │   ├── channel-config.ts # Team Mode channel configuration
+│   │   ├── usage-tracker.ts  # Rate limiting and cost tracking
+│   │   ├── prompt-builder.ts # Guardrailed prompt construction
+│   │   ├── file-watcher.ts   # Asset detection
+│   │   └── file-uploader.ts  # Slack file uploads
+│   ├── types/
+│   │   ├── config.ts         # Channel config types
+│   │   ├── usage.ts          # Usage tracking types
+│   │   └── files.ts          # File handling types
 │   └── lib/
 │       └── markdown-to-slack.ts  # Markdown conversion
 ├── data/
-│   └── sessions.json         # Session state (auto-created)
+│   ├── sessions.json         # Session state (auto-created)
+│   ├── channels.json         # Team Mode configuration
+│   └── usage.json            # Usage tracking data
 ├── pai-slack-bridge.service  # systemd unit file
 ├── install-linux.sh          # Linux service installer
 └── .env.example              # Configuration template
