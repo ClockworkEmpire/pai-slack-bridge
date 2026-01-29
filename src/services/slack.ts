@@ -138,14 +138,14 @@ export async function removeReaction(
  * Tool name to emoji mapping
  */
 const TOOL_EMOJIS: Record<string, string> = {
-  Bash: 'terminal',
+  Bash: 'computer',
   Read: 'eyes',
-  Write: 'pencil',
+  Write: 'memo',
   Edit: 'pencil2',
   Glob: 'mag',
   Grep: 'mag_right',
   WebFetch: 'globe_with_meridians',
-  WebSearch: 'magnifying_glass_tilted_right',
+  WebSearch: 'mag',
   Task: 'robot_face',
 };
 
