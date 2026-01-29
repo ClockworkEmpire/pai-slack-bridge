@@ -36,6 +36,9 @@ import { App, LogLevel } from '@slack/bolt';
 import { handleMessage, handleMention } from './handlers/message';
 import { cleanupOldSessions } from './services/session';
 import { getFileWatcher } from './services/file-watcher';
+import { reloadDesks, startWatching as startDeskWatching, stopWatching as stopDeskWatching } from './services/desk-loader';
+import { startBridgeApi } from './services/bridge-api';
+import type { SlackFile } from './types/slack';
 
 // Validate environment
 const requiredEnvVars = ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN'];
@@ -108,6 +111,7 @@ app.message(async ({ message, say }) => {
     thread_ts?: string;
     bot_id?: string;
     channel_type?: string;
+    files?: SlackFile[];
   };
 
   // Skip bot messages
@@ -133,7 +137,7 @@ app.message(async ({ message, say }) => {
   }
 
   try {
-    await handleMessage(msg);
+    await handleMessage({ ...msg, files: msg.files });
   } catch (error) {
     console.error('[Bridge] Error handling message:', error);
   }
@@ -165,6 +169,128 @@ app.event('app_mention', async ({ event }) => {
   }
 });
 
+// Track button selections per thread (for multi-question flows)
+const pendingSelections: Map<string, string[]> = new Map();
+
+// Handle interactive button clicks
+app.action(/.*/, async ({ action, body, ack }) => {
+  await ack();
+
+  if (action.type === 'button' && 'value' in action) {
+    const buttonAction = action as { value: string; action_id: string };
+    const messageBody = body as any;
+    const channel = messageBody.channel?.id;
+    const threadTs = messageBody.message?.thread_ts || messageBody.message?.ts;
+    const userId = messageBody.user?.id;
+    const threadKey = `${channel}:${threadTs}`;
+
+    if (!channel || !threadTs || !buttonAction.value) return;
+
+    console.log(`[Bridge] Button clicked: "${buttonAction.value}" by ${userId}`);
+
+    try {
+      // Multi-question answer selection (Q1: ..., Q2: ...)
+      if (buttonAction.value.match(/^Q\d+: /)) {
+        const selections = pendingSelections.get(threadKey) || [];
+        // Replace any existing answer for this question number
+        const qNum = buttonAction.value.match(/^(Q\d+):/)?.[1];
+        const qIndex = qNum ? parseInt(qNum.slice(1)) - 1 : -1;
+        const selectedLabel = buttonAction.value.replace(/^Q\d+: /, '');
+        const filtered = selections.filter(s => !s.startsWith(`${qNum}:`));
+        filtered.push(buttonAction.value);
+        pendingSelections.set(threadKey, filtered);
+
+        // Update the message blocks to highlight the selected answer (keep buttons clickable)
+        const msgTs = messageBody.message?.ts;
+        const currentBlocks = messageBody.message?.blocks || [];
+        if (msgTs && currentBlocks.length > 0) {
+          const updatedBlocks = currentBlocks.map((block: any) => {
+            if (block.type === 'actions' && block.elements) {
+              const hasThisQ = block.elements.some((el: any) =>
+                el.value?.startsWith(`${qNum}:`)
+              );
+              if (hasThisQ) {
+                // Update button text to show which is selected, but keep all buttons clickable
+                return {
+                  ...block,
+                  elements: block.elements.map((el: any) => {
+                    const elLabel = el.value?.replace(/^Q\d+: /, '') || '';
+                    const isSelected = elLabel === selectedLabel;
+                    return {
+                      ...el,
+                      text: {
+                        ...el.text,
+                        text: isSelected ? `✅ ${elLabel}` : elLabel.replace(/^✅ /, ''),
+                      },
+                    };
+                  }),
+                };
+              }
+            }
+            return block;
+          });
+
+          try {
+            await app.client.chat.update({
+              channel,
+              ts: msgTs,
+              text: messageBody.message?.text || '',
+              blocks: updatedBlocks,
+            });
+          } catch (e) {
+            console.error('[Bridge] Failed to update button highlight:', e);
+          }
+        }
+        return;
+      }
+
+      // Submit all answers
+      if (buttonAction.value === '__SUBMIT_ANSWERS__') {
+        const selections = pendingSelections.get(threadKey) || [];
+        pendingSelections.delete(threadKey);
+
+        const answersText = selections.length > 0
+          ? selections.sort().join('\n')
+          : 'No selections made';
+
+        const submitMsg = await app.client.chat.postMessage({
+          channel,
+          thread_ts: threadTs,
+          text: `:white_check_mark: *Answers submitted:*\n${answersText}`,
+        });
+
+        await handleMessage({
+          type: 'message',
+          text: answersText,
+          user: userId || 'unknown',
+          channel,
+          ts: submitMsg.ts || threadTs,
+          thread_ts: threadTs,
+        });
+        return;
+      }
+
+      // Simple single-question button or generic button
+      const selMsg = await app.client.chat.postMessage({
+        channel,
+        thread_ts: threadTs,
+        text: `:white_check_mark: Selected: *${buttonAction.value}*`,
+      });
+
+      await handleMessage({
+        type: 'message',
+        text: buttonAction.value,
+        user: userId || 'unknown',
+        channel,
+        ts: selMsg.ts || threadTs,
+        thread_ts: threadTs,
+      });
+    } catch (error) {
+      console.error('[Bridge] Error handling button click:', error);
+    }
+  }
+});
+
 // Periodic cleanup of old sessions (every hour)
 setInterval(() => {
   const removed = cleanupOldSessions(24);
@@ -189,6 +315,14 @@ setInterval(() => {
     await fileWatcher.start();
     console.log(`File watcher active: ${fileWatcher.getWatchedDirectories().join(', ')}`);
 
+    // Start Bridge API server (for Claude → Slack file/message/button sending)
+    const bridgeApi = startBridgeApi();
+    console.log(`Bridge API running on port ${bridgeApi.port}`);
+
+    // Load desk definitions and start watching for changes
+    reloadDesks();
+    startDeskWatching();
+
   } catch (error) {
     console.error('Failed to start bridge:', error);
     process.exit(1);
@@ -199,6 +333,7 @@ setInterval(() => {
 process.on('SIGINT', async () => {
   console.log('\nShutting down...');
   getFileWatcher().stop();
+  stopDeskWatching();
   await app.stop();
   process.exit(0);
 });
@@ -206,6 +341,7 @@ process.on('SIGINT', async () => {
 process.on('SIGTERM', async () => {
   console.log('\nShutting down...');
   getFileWatcher().stop();
+  stopDeskWatching();
   await app.stop();
   process.exit(0);
 });
