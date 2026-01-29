@@ -49,8 +49,8 @@ PAI Slack Bridge connects Slack to Claude Code, allowing you to interact with Cl
 - **File attachments** - Attach screenshots, PDFs, or code files and Claude can see them natively
 - **File delivery** - Claude can send generated files (charts, reports, code) back to the thread
 - **Interactive buttons** - Claude's questions render as clickable Slack buttons with multi-question submit flows
-- **Desk routing** - Route messages to specialized Claude personas via @mentions (e.g., `@backend`, `@frontend`)
 - **Bridge API** - HTTP API on port 3848 for Claude to send files and Block Kit messages to Slack
+- **Desk routing** *(experimental)* - Route to specialized personas via @mentions ([docs](docs/DESK_ROUTING.md))
 - **Long message handling** - Automatically splits responses that exceed Slack's limits
 - **Access control** - Restrict by Slack user ID or channel
 - **Full PAI integration** - Uses your `~/.claude/settings.json`, hooks, and skills
@@ -479,49 +479,6 @@ When Claude uses the `AskUserQuestion` tool, the bridge renders questions as cli
 **Multiple questions:** Each question shows its own button group. Selections are highlighted with a checkmark prefix (e.g., `✅ Option A`). You can change your selection at any time. A "Submit Answers" button at the bottom sends all selections to Claude at once.
 
 Claude can also send custom button layouts via the Bridge API's `/send-message` endpoint with Block Kit `blocks`.
-
----
-
-## Desk Routing
-
-Route messages to specialized Claude personas using @mentions. Each desk has its own system prompt, boundaries, and knowledge files.
-
-### Setup
-
-Create YAML desk definitions in `~/.claude/bridge/desks/`:
-
-```yaml
-# ~/.claude/bridge/desks/backend.yaml
-slug: backend
-name: Backend Engineer
-description: Backend API and database specialist
-mentions:
-  - "@backend"
-  - "@api"
-  - "@database"
-boundaries:
-  writable:
-    - "src/api/"
-    - "src/models/"
-  blocked:
-    - "src/frontend/"
-knowledge:
-  always_load:
-    - "docs/api-spec.md"
-system_prompt_suffix: "Focus on API design, database queries, and server-side logic."
-```
-
-### Usage
-
-In Slack, mention the desk name in your message:
-
-```
-@backend Add a new endpoint for user preferences
-@frontend Update the settings page layout
-@theme Change the primary color to dark teal
-```
-
-The bridge automatically loads the desk's context, boundaries, and knowledge into the Claude session.
 
 ---
 
