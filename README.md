@@ -44,7 +44,13 @@ PAI Slack Bridge connects Slack to Claude Code, allowing you to interact with Cl
 
 - **Streaming responses** - See Claude's response as it's generated
 - **Session resumption** - Reply in a thread to continue the conversation
-- **Tool indicators** - Emoji reactions show when Claude uses tools (🔧 Bash, 👀 Read, etc.)
+- **Tool activity messages** - Friendly per-tool status messages in the thread (e.g., "Reading `config.ts`", "Searching the web for...")
+- **Tool indicators** - Emoji reactions show when Claude uses tools (💻 Bash, 👀 Read, etc.)
+- **File attachments** - Attach screenshots, PDFs, or code files and Claude can see them natively
+- **File delivery** - Claude can send generated files (charts, reports, code) back to the thread
+- **Interactive buttons** - Claude's questions render as clickable Slack buttons with multi-question submit flows
+- **Desk routing** - Route messages to specialized Claude personas via @mentions (e.g., `@backend`, `@frontend`)
+- **Bridge API** - HTTP API on port 3848 for Claude to send files and Block Kit messages to Slack
 - **Long message handling** - Automatically splits responses that exceed Slack's limits
 - **Access control** - Restrict by Slack user ID or channel
 - **Full PAI integration** - Uses your `~/.claude/settings.json`, hooks, and skills
@@ -102,6 +108,8 @@ Scroll to **Scopes → Bot Token Scopes** and add:
 | `channels:history` | Read channel messages |
 | `channels:join` | Join public channels |
 | `chat:write` | Post messages |
+| `files:read` | Download user-attached files (images, PDFs, etc.) |
+| `files:write` | Upload files from Claude back to threads |
 | `groups:history` | Read private channels |
 | `im:history` | Read DMs |
 | `im:write` | Send DMs |
@@ -127,7 +135,17 @@ In the left sidebar: **Features → Event Subscriptions**
    - `app_mention` (@mentions)
 3. Click **Save Changes**
 
-### 6. Install App to Workspace
+### 6. Enable Interactivity
+
+In the left sidebar: **Features → Interactivity & Shortcuts**
+
+1. Toggle **Interactivity** to ON
+2. You do **not** need a Request URL (Socket Mode handles it)
+3. Click **Save Changes**
+
+This enables interactive buttons (used for Claude's AskUserQuestion tool and Bridge API button messages).
+
+### 7. Install App to Workspace
 
 In the left sidebar: **Settings → Install App**
 
@@ -135,7 +153,7 @@ In the left sidebar: **Settings → Install App**
 2. Review permissions and click **Allow**
 3. **Copy the Bot User OAuth Token** (starts with `xoxb-...`) → This is your `SLACK_BOT_TOKEN`
 
-### 7. Add Tokens to Environment
+### 8. Add Tokens to Environment
 
 Add to `~/.claude/.env`:
 
@@ -144,7 +162,7 @@ SLACK_BOT_TOKEN=xoxb-your-token-here
 SLACK_APP_TOKEN=xapp-your-token-here
 ```
 
-### 8. Test It
+### 9. Test It
 
 ```bash
 cd pai-slack-bridge
@@ -177,6 +195,8 @@ Set these in `$PAI_DIR/.env`:
 | `SLACK_BOT_TOKEN` | (required) | Bot OAuth token (xoxb-...) |
 | `SLACK_APP_TOKEN` | (required) | App-level token for Socket Mode (xapp-...) |
 | `BRIDGE_PORT` | `3847` | Port for the bridge server |
+| `BRIDGE_API_PORT` | `3848` | Port for the Bridge API (file/message sending) |
+| `BRIDGE_API_SECRET` | (none) | Optional Bearer token for Bridge API auth |
 | `BRIDGE_DEFAULT_CWD` | `$PAI_DIR` | Working directory for Claude sessions |
 | `BRIDGE_ALLOWED_CHANNELS` | (all) | Comma-separated channel IDs |
 | `BRIDGE_ALLOWED_USERS` | (all) | Comma-separated Slack user IDs |
@@ -295,6 +315,19 @@ Enable the Messages Tab in **Features → App Home**
 ### Rate limiting
 The bridge debounces updates to 500ms. Long responses are automatically split into multiple messages.
 
+### File attachments not working
+- Ensure `files:read` scope is added to the Slack app
+- Reinstall the app after adding new scopes
+- Check logs for "HTML content detected" — this means the download URL returned a web page instead of the file
+
+### Buttons not appearing
+- Ensure **Interactivity** is enabled in the Slack app settings (Features → Interactivity & Shortcuts)
+- Socket Mode handles the interactivity — no Request URL is needed
+
+### Bridge API errors
+- Check that port 3848 is not in use: `lsof -i:3848`
+- If using `BRIDGE_API_SECRET`, ensure the auth header matches
+
 ### No PAI context/skills
 Ensure `PAI_DIR` points to your PAI installation (default: `~/.claude`)
 
@@ -376,31 +409,157 @@ To enable file uploads, add `files:write` to your Slack app's Bot Token Scopes:
 
 ---
 
+## File Attachments (Slack → Claude)
+
+Attach files to your Slack messages and Claude can see them natively. The bridge downloads the file, saves it locally, and passes the path to Claude's `Read` tool.
+
+**Supported formats:**
+- Images: PNG, JPG, GIF, WebP (Claude vision)
+- Documents: PDF, TXT, MD, CSV, JSON
+- Code: TypeScript, JavaScript
+
+**How it works:**
+1. Attach a file to your Slack message (or paste a screenshot)
+2. The bridge downloads it via Slack's `url_private` with Bearer auth
+3. The file path is prepended to the message: `[Attached: /tmp/slack-bridge-files/.../screenshot.png]`
+4. Claude's Read tool natively opens images and PDFs
+
+**Limits:** Files over 10MB are skipped with a warning. Unsupported file types are ignored.
+
+**Required scope:** `files:read` (see Slack App Setup step 3).
+
+---
+
+## Bridge API (Claude → Slack)
+
+An HTTP API server runs alongside the bridge on port 3848. Claude can call it via `curl` to send files and interactive messages back to the Slack thread.
+
+### Endpoints
+
+**`POST /send-file`** — Upload a file to the current thread
+
+```bash
+curl -s -X POST http://localhost:3848/send-file \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"SESSION_ID","filePath":"/path/to/file","comment":"optional"}'
+```
+
+**`POST /send-message`** — Post a message with optional Block Kit blocks
+
+```bash
+curl -s -X POST http://localhost:3848/send-message \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"SESSION_ID","text":"Hello","blocks":[...]}'
+```
+
+**`GET /health`** — Health check
+
+Claude is automatically taught these endpoints via the system prompt and uses them to deliver files and present interactive choices.
+
+### CLI Wrapper
+
+A helper script is provided at `bin/slack-bridge-send`:
+
+```bash
+# Send a file
+slack-bridge-send file <session-id> /path/to/file "optional comment"
+
+# Send a message
+slack-bridge-send message <session-id> "Hello from Claude"
+```
+
+---
+
+## Interactive Buttons
+
+When Claude uses the `AskUserQuestion` tool, the bridge renders questions as clickable Slack buttons instead of plain text.
+
+**Single question:** Clicking a button immediately sends the selection to Claude.
+
+**Multiple questions:** Each question shows its own button group. Selections are highlighted with a checkmark prefix (e.g., `✅ Option A`). You can change your selection at any time. A "Submit Answers" button at the bottom sends all selections to Claude at once.
+
+Claude can also send custom button layouts via the Bridge API's `/send-message` endpoint with Block Kit `blocks`.
+
+---
+
+## Desk Routing
+
+Route messages to specialized Claude personas using @mentions. Each desk has its own system prompt, boundaries, and knowledge files.
+
+### Setup
+
+Create YAML desk definitions in `~/.claude/bridge/desks/`:
+
+```yaml
+# ~/.claude/bridge/desks/backend.yaml
+slug: backend
+name: Backend Engineer
+description: Backend API and database specialist
+mentions:
+  - "@backend"
+  - "@api"
+  - "@database"
+boundaries:
+  writable:
+    - "src/api/"
+    - "src/models/"
+  blocked:
+    - "src/frontend/"
+knowledge:
+  always_load:
+    - "docs/api-spec.md"
+system_prompt_suffix: "Focus on API design, database queries, and server-side logic."
+```
+
+### Usage
+
+In Slack, mention the desk name in your message:
+
+```
+@backend Add a new endpoint for user preferences
+@frontend Update the settings page layout
+@theme Change the primary color to dark teal
+```
+
+The bridge automatically loads the desk's context, boundaries, and knowledge into the Claude session.
+
+---
+
 ## Architecture
 
 ```
 pai-slack-bridge/
 ├── src/
-│   ├── index.ts              # Entry point, Socket Mode server
+│   ├── index.ts              # Entry point, Socket Mode, button handler
 │   ├── handlers/
-│   │   └── message.ts        # Message and @mention handling
+│   │   └── message.ts        # Message handling, tool activity, buttons
 │   ├── middleware/
 │   │   └── classifier.ts     # Task classification (Team Mode)
 │   ├── services/
 │   │   ├── claude.ts         # Claude CLI spawner with streaming
 │   │   ├── session.ts        # Thread ↔ Session mapping
 │   │   ├── slack.ts          # Slack API wrapper
+│   │   ├── slack-files.ts    # Inbound file attachment downloads
+│   │   ├── bridge-api.ts     # HTTP API for Claude → Slack (files, messages)
+│   │   ├── desk-loader.ts    # Desk definition loader (YAML)
+│   │   ├── desk-router.ts    # @mention → desk routing
+│   │   ├── session-manifest.ts # Per-session desk context
 │   │   ├── channel-config.ts # Team Mode channel configuration
 │   │   ├── usage-tracker.ts  # Rate limiting and cost tracking
 │   │   ├── prompt-builder.ts # Guardrailed prompt construction
 │   │   ├── file-watcher.ts   # Asset detection
 │   │   └── file-uploader.ts  # Slack file uploads
 │   ├── types/
+│   │   ├── index.ts          # Type re-exports
 │   │   ├── config.ts         # Channel config types
 │   │   ├── usage.ts          # Usage tracking types
-│   │   └── files.ts          # File handling types
+│   │   ├── files.ts          # File handling types
+│   │   ├── slack.ts          # Slack file, button, block types
+│   │   └── desk.ts           # Desk definition types
 │   └── lib/
 │       └── markdown-to-slack.ts  # Markdown conversion
+├── bin/
+│   └── slack-bridge-send     # CLI wrapper for Bridge API
 ├── data/
 │   ├── sessions.json         # Session state (auto-created)
 │   ├── channels.json         # Team Mode configuration
