@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# CLI wrapper for the PAI Slack Bridge API
+# Usage:
+#   slack-bridge-send file <session-id> <path> [comment]
+#   slack-bridge-send message <session-id> <text>
+
+set -euo pipefail
+
+BRIDGE_API_PORT="${BRIDGE_API_PORT:-3848}"
+BRIDGE_API_SECRET="${BRIDGE_API_SECRET:-}"
+BASE_URL="http://localhost:${BRIDGE_API_PORT}"
+
+AUTH_HEADER=""
+if [ -n "$BRIDGE_API_SECRET" ]; then
+  AUTH_HEADER="-H \"Authorization: Bearer ${BRIDGE_API_SECRET}\""
+fi
+
+usage() {
+  echo "Usage:"
+  echo "  slack-bridge-send file <session-id> <path> [comment]"
+  echo "  slack-bridge-send message <session-id> <text>"
+  exit 1
+}
+
+[ $# -lt 3 ] && usage
+
+CMD="$1"
+SESSION_ID="$2"
+
+case "$CMD" in
+  file)
+    FILE_PATH="$3"
+    COMMENT="${4:-}"
+    eval curl -s -X POST "${BASE_URL}/send-file" \
+      ${AUTH_HEADER} \
+      -H "Content-Type: application/json" \
+      -d "$(jq -n --arg sid "$SESSION_ID" --arg fp "$FILE_PATH" --arg c "$COMMENT" \
+        '{sessionId: $sid, filePath: $fp, comment: (if $c == "" then null else $c end)}')"
+    ;;
+  message)
+    shift 2
+    TEXT="$*"
+    eval curl -s -X POST "${BASE_URL}/send-message" \
+      ${AUTH_HEADER} \
+      -H "Content-Type: application/json" \
+      -d "$(jq -n --arg sid "$SESSION_ID" --arg t "$TEXT" \
+        '{sessionId: $sid, text: $t}')"
+    ;;
+  *)
+    usage
+    ;;
+esac

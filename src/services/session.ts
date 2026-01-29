@@ -115,6 +115,19 @@ export function updateSessionActivity(channelId: string, threadTs: string): void
 }
 
 /**
+ * Look up a session by its sessionId (for bridge API)
+ */
+export function getSessionBySessionId(sessionId: string): SessionMapping | null {
+  const store = loadSessions();
+  for (const session of Object.values(store.sessions)) {
+    if (session.sessionId === sessionId) {
+      return session;
+    }
+  }
+  return null;
+}
+
+/**
  * Clean up old sessions (older than 24 hours of inactivity)
  */
 export function cleanupOldSessions(maxAgeHours = 24): number {
