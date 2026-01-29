@@ -1,6 +1,6 @@
 // Handle incoming Slack messages
 import { getOrCreateSession } from '../services/session';
-import { executeClaudeStreaming, extractText, type StreamEvent } from '../services/claude';
+import { executeClaudeStreaming, extractText, type StreamEvent, type ContentBlock } from '../services/claude';
 import { postMessage, addReaction, removeReaction, getToolEmoji, MessageUpdater, updateMessage } from '../services/slack';
 import { splitForSlack, markdownToSlack, stripSystemReminders } from '../lib/markdown-to-slack';
 import { getChannelConfig, isChannelEnabled } from '../services/channel-config';
@@ -9,6 +9,11 @@ import { classifyRequest, isRequestAllowed, getCategoryDisplayName } from '../mi
 import { buildGuardrailedPrompt, validateMessage, buildRejectionMessage, buildRateLimitMessage } from '../services/prompt-builder';
 import { getFileWatcher, getPendingFiles, clearPendingFiles } from '../services/file-watcher';
 import { uploadFilesToThread, filterAllowedFiles } from '../services/file-uploader';
+import { getDesksForMessage, removeDeskMentions } from '../services/desk-router';
+import { createDeskManifest } from '../services/session-manifest';
+import { downloadMessageFiles, buildFilePrefix, cleanupSessionFiles } from '../services/slack-files';
+import type { DeskDefinition, DeskRouteResult } from '../types/desk';
+import type { SlackFile } from '../types/slack';
 
 const MAX_SLACK_MESSAGE_LENGTH = 3500;
 
@@ -21,16 +26,16 @@ interface SlackMessage {
   ts: string;
   thread_ts?: string;
   bot_id?: string;
+  files?: SlackFile[];
 }
 
 /**
  * Handle an incoming Slack message
  */
 export async function handleMessage(message: SlackMessage): Promise<void> {
-  // Skip bot messages and message edits
-  if (message.bot_id || message.subtype) {
-    return;
-  }
+  // Skip bot messages and non-useful subtypes (but allow file_share)
+  if (message.bot_id) return;
+  if (message.subtype && message.subtype !== 'file_share') return;
 
   const { channel, text, user, ts, thread_ts } = message;
 
@@ -38,6 +43,17 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
   const threadTs = thread_ts || ts;
 
   console.log(`[Handler] Message from ${user} in ${channel}: ${text.slice(0, 50)}...`);
+  if (message.files?.length) {
+    console.log(`[Handler] Message has ${message.files.length} file(s): ${message.files.map(f => `${f.name} (${f.mimetype})`).join(', ')}`);
+  }
+
+  // Route to desks based on @mentions
+  const deskRoutes = getDesksForMessage(text);
+  const hasDesks = deskRoutes.length > 0 && deskRoutes[0].matchedMention !== '';
+
+  if (hasDesks) {
+    console.log(`[Handler] Desk routing: ${deskRoutes.map(r => r.desk.slug).join(', ')}`);
+  }
 
   // Check if channel has team mode config
   const channelConfig = getChannelConfig(channel);
@@ -45,6 +61,12 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
 
   let messageToSend = text;
   let classificationResult = null;
+
+  // For desk-routed messages, clean the @mentions from the text
+  if (hasDesks) {
+    messageToSend = removeDeskMentions(text, deskRoutes);
+    console.log(`[Handler] Cleaned message: ${messageToSend.slice(0, 50)}...`);
+  }
 
   // Team mode: apply classification, guardrails, and rate limits
   if (isTeamMode) {
@@ -94,6 +116,19 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
   const { session, isNew } = getOrCreateSession(channel, threadTs, user);
   console.log(`[Handler] Session: ${session.sessionId} (${isNew ? 'new' : 'existing'})`);
 
+  // Download any attached files
+  if (message.files && message.files.length > 0) {
+    const botToken = process.env.SLACK_BOT_TOKEN;
+    if (botToken) {
+      console.log(`[Handler] Downloading ${message.files.length} attached file(s)`);
+      const { paths, warnings } = await downloadMessageFiles(message.files, session.sessionId, botToken);
+      const filePrefix = buildFilePrefix(paths, warnings);
+      if (filePrefix) {
+        messageToSend = filePrefix + messageToSend;
+      }
+    }
+  }
+
   // Post initial "thinking" message
   const initialMessage = await postMessage(
     channel,
@@ -105,7 +140,7 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
   await addReaction(channel, ts, 'hourglass_flowing_sand');
 
   // Create message updater for streaming
-  const updater = new MessageUpdater(channel, initialMessage.ts);
+  let updater = new MessageUpdater(channel, initialMessage.ts);
 
   const startTime = Date.now();
   let costUsd = 0;
@@ -119,60 +154,223 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
     console.log('[Handler] File watcher activated for this request');
   }
 
+  // Create session manifest for desk-routed sessions
+  const primaryDesk = hasDesks ? deskRoutes[0].desk : null;
+  if (primaryDesk && isNew) {
+    createDeskManifest(session.sessionId, primaryDesk);
+    console.log(`[Handler] Created manifest for desk: ${primaryDesk.slug}`);
+  }
+
   try {
-    let fullText = '';
+    let currentTurnText = '';
+    let turnCount = 0;
     let toolsUsed: Set<string> = new Set();
+    let lastEventWasTool = false;
+    let currentMsgTs = initialMessage.ts; // Track which message we're updating
+    let askedQuestions = false; // Track if AskUserQuestion was posted (dedup across events)
 
     // Execute Claude and stream responses
     for await (const event of executeClaudeStreaming(messageToSend, {
       resumeId: isNew ? undefined : session.sessionId,
       sessionId: isNew ? session.sessionId : undefined,
+      desk: primaryDesk || undefined,
     })) {
       await processStreamEvent(event, updater, initialMessage, channel, toolsUsed);
 
-      // Accumulate text
+      // Post tool activity as separate messages in the thread
       if (event.type === 'assistant' && event.message?.content) {
-        const newText = extractText(event.message.content);
+        const content = event.message.content;
+        const toolBlocks = content.filter((b: ContentBlock) => b.type === 'tool_use');
+        // Only extract text if there are NO tool blocks and we're not waiting for question answers
+        const newText = (toolBlocks.length === 0 && !askedQuestions) ? extractText(content) : '';
+
+        console.log(`[Handler] Assistant event: ${toolBlocks.length} tools, ${newText.length} chars text`);
+
+        // Deduplicate AskUserQuestion across the entire stream (not just per-event)
+        const uniqueToolBlocks = toolBlocks.filter((b: any) => {
+          const name = b.name || 'unknown';
+          if (name === 'AskUserQuestion') {
+            if (askedQuestions) return false; // Already posted questions — skip duplicate
+          }
+          return true;
+        });
+
+        // Post tool use notifications as individual messages
+        for (const tool of uniqueToolBlocks) {
+          const toolName = (tool as any).name || 'Tool';
+          const emoji = getToolEmoji(toolName);
+          const toolInput = (tool as any).input || {};
+
+          // Special handling: AskUserQuestion → render as Slack buttons
+          if (toolName === 'AskUserQuestion' && toolInput.questions) {
+            const questions = toolInput.questions as Array<{
+              question: string;
+              header?: string;
+              options: Array<{ label: string; description?: string }>;
+            }>;
+
+            const allBlocks: any[] = [];
+            const questionCount = questions.length;
+
+            for (let qi = 0; qi < questions.length; qi++) {
+              const q = questions[qi];
+
+              // Section with the question text
+              allBlocks.push({
+                type: 'section',
+                text: { type: 'mrkdwn', text: `*${q.header || `Question ${qi + 1}`}:* ${q.question}` },
+              });
+
+              // Buttons for this question — each stores "Q#: answer" as value
+              const buttons = q.options.map((opt: { label: string }, oi: number) => ({
+                type: 'button',
+                text: { type: 'plain_text', text: opt.label, emoji: true },
+                action_id: `askq_${qi}_${oi}_${Date.now()}`,
+                value: `Q${qi + 1}: ${opt.label}`,
+              }));
+
+              allBlocks.push({ type: 'actions', elements: buttons });
+
+              // Add divider between questions
+              if (qi < questionCount - 1) {
+                allBlocks.push({ type: 'divider' });
+              }
+            }
+
+            // If multiple questions, add a Submit button
+            if (questionCount > 1) {
+              allBlocks.push({ type: 'divider' });
+              allBlocks.push({
+                type: 'section',
+                text: { type: 'mrkdwn', text: '_Select your answers above, then click Submit._' },
+              });
+              allBlocks.push({
+                type: 'actions',
+                elements: [{
+                  type: 'button',
+                  text: { type: 'plain_text', text: 'Submit Answers', emoji: true },
+                  action_id: `ask_submit_${Date.now()}`,
+                  value: '__SUBMIT_ANSWERS__',
+                  style: 'primary',
+                }],
+              });
+            }
+
+            const client = (await import('../services/slack')).getSlackClient();
+            await client.chat.postMessage({
+              channel,
+              thread_ts: threadTs,
+              text: questions.map(q => q.question).join('\n'),
+              blocks: allBlocks,
+            });
+            askedQuestions = true;
+            console.log(`[Handler] Posted AskUserQuestion with ${questionCount} question(s)`);
+            continue; // Skip normal tool message posting
+          }
+
+          // Build a human-friendly description of what the tool is doing
+          let toolMsg = '';
+          if (toolName === 'Read' && toolInput.file_path) {
+            const filename = String(toolInput.file_path).split('/').pop();
+            toolMsg = `:${emoji}: Reading \`${filename}\``;
+          } else if (toolName === 'Write' && toolInput.file_path) {
+            const filename = String(toolInput.file_path).split('/').pop();
+            toolMsg = `:${emoji}: Writing \`${filename}\``;
+          } else if (toolName === 'Edit' && toolInput.file_path) {
+            const filename = String(toolInput.file_path).split('/').pop();
+            toolMsg = `:${emoji}: Editing \`${filename}\``;
+          } else if (toolName === 'Bash' && toolInput.command) {
+            const cmd = String(toolInput.command).slice(0, 60);
+            toolMsg = `:${emoji}: Running command...`;
+          } else if (toolName === 'Glob' && toolInput.pattern) {
+            toolMsg = `:${emoji}: Searching for files matching \`${toolInput.pattern}\``;
+          } else if (toolName === 'Grep' && toolInput.pattern) {
+            toolMsg = `:${emoji}: Searching code for \`${toolInput.pattern}\``;
+          } else if (toolName === 'WebSearch' && toolInput.query) {
+            toolMsg = `:${emoji}: Searching the web for "${toolInput.query}"`;
+          } else if (toolName === 'WebFetch' && toolInput.url) {
+            toolMsg = `:${emoji}: Fetching web page...`;
+          } else if (toolName === 'Task') {
+            toolMsg = `:${emoji}: ${toolInput.description || 'Running subtask...'}`;
+          } else {
+            toolMsg = `:${emoji}: Using ${toolName}...`;
+          }
+          await postMessage(channel, toolMsg, threadTs, true);
+          console.log(`[Handler] Posted tool activity: ${toolMsg.slice(0, 60)}`);
+        }
+
         if (newText) {
-          fullText = newText; // Claude sends full message each time in stream-json
-          updater.setText(fullText);
-          await updater.append(''); // Trigger update check
+          // If we had tool use before this text and have previous text, post it
+          if (lastEventWasTool && currentTurnText) {
+            const prevProcessed = markdownToSlack(stripSystemReminders(currentTurnText));
+            await postMessage(channel, prevProcessed, threadTs, true);
+            turnCount++;
+            currentTurnText = '';
+          }
+
+          lastEventWasTool = false;
+          currentTurnText = newText; // Accumulate — only posted at end or next boundary
+        }
+
+        if (toolBlocks.length > 0) {
+          lastEventWasTool = true;
         }
       }
 
-      // Capture cost from result event
-      if (event.type === 'result' && event.cost_usd) {
-        costUsd = event.cost_usd;
+      // Track tool results as boundaries too
+      if (event.type === 'user') {
+        lastEventWasTool = true;
+      }
+
+      // Capture cost and final text from result event
+      if (event.type === 'result') {
+        if (event.cost_usd) costUsd = event.cost_usd;
+        // The result event contains the final response text
+        if (event.result && !currentTurnText) {
+          currentTurnText = event.result;
+          console.log(`[Handler] Got final text from result event (${currentTurnText.length} chars)`);
+        }
       }
     }
 
-    // Handle long responses by splitting into multiple messages
-    const finalText = updater.getText();
+    // Finalize: update processing message to done, post final response as new message
+    const finalText = currentTurnText || updater.getText();
 
-    if (!finalText) {
-      await updateMessage(channel, initialMessage.ts, ':warning: No response received from Claude');
+    if (askedQuestions) {
+      // Waiting for user to answer questions — don't finalize
+      const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+      await updateMessage(channel, initialMessage.ts, `:hourglass: Waiting for your answers... (${duration}s)`, true);
+      await removeReaction(channel, ts, 'hourglass_flowing_sand');
+      await addReaction(channel, ts, 'question');
+      console.log(`[Handler] Finalize skipped — waiting for question answers`);
     } else {
-      const processedText = markdownToSlack(stripSystemReminders(finalText));
+      // Normal completion
+      const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+      await updateMessage(channel, initialMessage.ts, `:white_check_mark: Completed in ${duration}s`, true);
 
-      if (processedText.length > MAX_SLACK_MESSAGE_LENGTH) {
-        console.log(`[Handler] Response too long (${processedText.length} chars), splitting into multiple messages`);
-        const chunks = splitForSlack(processedText, MAX_SLACK_MESSAGE_LENGTH);
+      console.log(`[Handler] Finalize: finalText=${finalText?.length || 0} chars, turns=${turnCount}`);
 
-        // Update first message with first chunk
-        await updateMessage(channel, initialMessage.ts, chunks[0], true);
-
-        // Post remaining chunks as follow-up messages
-        for (let i = 1; i < chunks.length; i++) {
-          await postMessage(channel, chunks[i], threadTs, true);
-        }
+      if (!finalText) {
+        console.log('[Handler] No final text — tools may have handled everything');
       } else {
-        await updateMessage(channel, initialMessage.ts, processedText, true);
-      }
-    }
+        const processedText = markdownToSlack(stripSystemReminders(finalText));
 
-    // Remove thinking reaction, add checkmark
-    await removeReaction(channel, ts, 'hourglass_flowing_sand');
-    await addReaction(channel, ts, 'white_check_mark');
+        if (processedText.length > MAX_SLACK_MESSAGE_LENGTH) {
+          console.log(`[Handler] Response too long (${processedText.length} chars), splitting into multiple messages`);
+          const chunks = splitForSlack(processedText, MAX_SLACK_MESSAGE_LENGTH);
+
+          for (const chunk of chunks) {
+            await postMessage(channel, chunk, threadTs, true);
+          }
+        } else {
+          await postMessage(channel, processedText, threadTs, true);
+        }
+      }
+
+      // Remove thinking reaction, add checkmark
+      await removeReaction(channel, ts, 'hourglass_flowing_sand');
+      await addReaction(channel, ts, 'white_check_mark');
+    }
 
     // Upload any files generated during execution
     if (isTeamMode && channelConfig.autoUploadAssets) {
