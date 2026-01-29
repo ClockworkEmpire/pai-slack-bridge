@@ -1,5 +1,7 @@
 // Claude CLI spawner: executes claude in headless mode and streams output
 import { spawn, type Subprocess } from 'bun';
+import { readFileSync, existsSync } from 'fs';
+import type { DeskDefinition } from '../types/desk';
 
 export interface ClaudeOptions {
   sessionId?: string;   // For new sessions
@@ -7,6 +9,7 @@ export interface ClaudeOptions {
   cwd?: string;
   model?: string;
   permissionMode?: string;
+  desk?: DeskDefinition; // Desk context for routing
 }
 
 export interface StreamEvent {
@@ -53,6 +56,47 @@ export async function* executeClaudeStreaming(
 
   const settingsPath = `${paiDir}/settings.json`;
 
+  // Build desk context if provided
+  let deskContext = '';
+  if (options.desk) {
+    const desk = options.desk;
+
+    // Load always_load knowledge files
+    const knowledgeContent: string[] = [];
+    for (const filePath of desk.knowledge.always_load || []) {
+      if (existsSync(filePath)) {
+        try {
+          const content = readFileSync(filePath, 'utf-8');
+          knowledgeContent.push(`--- ${filePath} ---\n${content}`);
+        } catch (e) {
+          console.warn(`[Claude] Failed to load knowledge file: ${filePath}`);
+        }
+      }
+    }
+
+    deskContext = `
+--- DESK CONTEXT ---
+You are the "${desk.name}" (${desk.slug}).
+${desk.description}
+
+BOUNDARIES:
+- Writable paths: ${(desk.boundaries.writable || []).join(', ') || 'none'}
+- Readable paths: ${(desk.boundaries.readable || []).join(', ') || 'none'}
+- Blocked paths: ${(desk.boundaries.blocked || []).join(', ') || 'none'}
+
+${desk.system_prompt_suffix || ''}
+
+${knowledgeContent.length > 0 ? '--- LOADED KNOWLEDGE ---\n' + knowledgeContent.join('\n\n') : ''}
+--- END DESK CONTEXT ---
+`;
+    console.log(`[Claude] Injecting desk context for: ${desk.slug}`);
+  }
+
+  // Build bridge API context
+  const bridgeApiPort = process.env.BRIDGE_API_PORT || '3848';
+  const bridgeApiSecret = process.env.BRIDGE_API_SECRET || '';
+  const authHeader = bridgeApiSecret ? `-H "Authorization: Bearer ${bridgeApiSecret}"` : '';
+
   // Reinforce structured output format for Slack responses
   const slackSystemPrompt = `CRITICAL OVERRIDE - SLACK CHANNEL RESPONSE FORMAT:
 
@@ -69,7 +113,25 @@ Required sections for ALL responses:
 
 The 🎯 COMPLETED line is spoken aloud via voice synthesis. Keep it 8-12 words, never start with "Completed".
 
-This is a CONSTITUTIONAL requirement. No exceptions.`;
+This is a CONSTITUTIONAL requirement. No exceptions.
+
+--- BRIDGE API ---
+You have access to a local Bridge API for sending files and interactive messages back to the Slack thread.
+The current session ID is available as SESSION_ID in your environment context.
+
+SEND A FILE to the current Slack thread:
+curl -s -X POST http://localhost:${bridgeApiPort}/send-file ${authHeader} -H "Content-Type: application/json" -d '{"sessionId":"SESSION_ID_HERE","filePath":"/path/to/file","comment":"optional comment"}'
+
+SEND A MESSAGE WITH BUTTONS (for presenting 2-4 options to the user):
+curl -s -X POST http://localhost:${bridgeApiPort}/send-message ${authHeader} -H "Content-Type: application/json" -d '{"sessionId":"SESSION_ID_HERE","text":"Choose an option:","blocks":[{"type":"section","text":{"type":"mrkdwn","text":"Choose an option:"}},{"type":"actions","elements":[{"type":"button","text":{"type":"plain_text","text":"Option A"},"action_id":"opt_a","value":"I choose Option A"},{"type":"button","text":{"type":"plain_text","text":"Option B"},"action_id":"opt_b","value":"I choose Option B"}]}]}'
+
+When presenting 2-4 choices to the user, prefer buttons over numbered lists.
+When you create a file the user needs, use the send-file endpoint to deliver it to the thread.
+Replace SESSION_ID_HERE with the actual session ID from the current context.
+
+INBOUND FILES: When a user attaches files (images, PDFs, text), their local paths are prepended to the message as [Attached: /path/to/file]. Use the Read tool to view them — it natively supports images (PNG, JPG, GIF, WebP) and PDFs.
+--- END BRIDGE API ---
+${deskContext}`;
 
   const args = [
     '-p',
