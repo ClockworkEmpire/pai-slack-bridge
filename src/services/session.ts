@@ -10,6 +10,7 @@ export interface SessionMapping {
   userId: string;
   createdAt: string;
   lastActivity: string;
+  verbose?: boolean;
 }
 
 interface SessionStore {
@@ -125,6 +126,41 @@ export function getSessionBySessionId(sessionId: string): SessionMapping | null 
     }
   }
   return null;
+}
+
+/**
+ * Update session ID with Claude Code's actual session ID
+ * Called when Claude Code returns a different session_id than what we generated
+ */
+export function updateSessionId(channelId: string, threadTs: string, realSessionId: string): boolean {
+  const store = loadSessions();
+  const key = sessionKey(channelId, threadTs);
+
+  if (store.sessions[key]) {
+    const oldId = store.sessions[key].sessionId;
+    if (oldId !== realSessionId) {
+      console.log(`[Session] Reconciling session ID: ${oldId} -> ${realSessionId}`);
+      store.sessions[key].sessionId = realSessionId;
+      saveSessions(store);
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Set verbose flag for a session
+ */
+export function setSessionVerbose(channelId: string, threadTs: string, verbose: boolean): boolean {
+  const store = loadSessions();
+  const key = sessionKey(channelId, threadTs);
+
+  if (store.sessions[key]) {
+    store.sessions[key].verbose = verbose;
+    saveSessions(store);
+    return true;
+  }
+  return false;
 }
 
 /**

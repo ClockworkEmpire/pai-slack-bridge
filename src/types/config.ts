@@ -36,6 +36,9 @@ export interface ChannelConfig {
   autoUploadAssets: boolean;
   allowedFileTypes: string[];
   maxFileSizeMb: number;
+
+  // Claude CLI flags
+  verbose?: boolean;
 }
 
 export interface ChannelStore {
@@ -56,4 +59,5 @@ export const DEFAULT_CHANNEL_CONFIG: Partial<ChannelConfig> = {
   autoUploadAssets: false,
   allowedFileTypes: [],
   maxFileSizeMb: 5,
+  verbose: true,
 };

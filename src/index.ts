@@ -34,7 +34,7 @@ loadEnvFile(`${paiDir}/.env`);
 
 import { App, LogLevel } from '@slack/bolt';
 import { handleMessage, handleMention } from './handlers/message';
-import { cleanupOldSessions } from './services/session';
+import { cleanupOldSessions, getSession, setSessionVerbose } from './services/session';
 import { getFileWatcher } from './services/file-watcher';
 import { reloadDesks, startWatching as startDeskWatching, stopWatching as stopDeskWatching } from './services/desk-loader';
 import { startBridgeApi } from './services/bridge-api';
@@ -288,6 +288,81 @@ app.action(/.*/, async ({ action, body, ack }) => {
     } catch (error) {
       console.error('[Bridge] Error handling button click:', error);
     }
+  }
+});
+
+// Handle reaction-based verbose toggle (🤫 shushing_face)
+const VERBOSE_OFF_EMOJI = 'shushing_face';
+const VERBOSE_CONFIRM_EMOJI = 'mute';
+
+app.event('reaction_added', async ({ event }) => {
+  if (event.reaction !== VERBOSE_OFF_EMOJI) return;
+
+  const channel = event.item.type === 'message' ? (event.item as any).channel : null;
+  const msgTs = event.item.type === 'message' ? (event.item as any).ts : null;
+  if (!channel || !msgTs) return;
+
+  // Look up session — the reacted message could be any message in the thread,
+  // so we need to check both as a thread parent (ts) and as a thread reply (thread_ts would be on the message itself).
+  // For simplicity, try the message ts as the thread key first, then check if there's a session where this is a known thread.
+  let session = getSession(channel, msgTs);
+  if (!session) {
+    // The user may have reacted to a reply — we need the thread_ts.
+    // Unfortunately reaction events don't include thread_ts, so we fetch the message.
+    try {
+      const result = await app.client.conversations.replies({
+        channel,
+        ts: msgTs,
+        limit: 1,
+      });
+      const threadTs = result.messages?.[0]?.thread_ts;
+      if (threadTs) {
+        session = getSession(channel, threadTs);
+      }
+    } catch {
+      // Ignore — can't resolve thread
+    }
+  }
+
+  if (!session) return;
+
+  const updated = setSessionVerbose(channel, session.threadTs, false);
+  if (updated) {
+    console.log(`[Bridge] Verbose OFF for session ${session.sessionId} (reaction by ${event.user})`);
+    await app.client.reactions.add({ channel, timestamp: msgTs, name: VERBOSE_CONFIRM_EMOJI }).catch(() => {});
+  }
+});
+
+app.event('reaction_removed', async ({ event }) => {
+  if (event.reaction !== VERBOSE_OFF_EMOJI) return;
+
+  const channel = event.item.type === 'message' ? (event.item as any).channel : null;
+  const msgTs = event.item.type === 'message' ? (event.item as any).ts : null;
+  if (!channel || !msgTs) return;
+
+  let session = getSession(channel, msgTs);
+  if (!session) {
+    try {
+      const result = await app.client.conversations.replies({
+        channel,
+        ts: msgTs,
+        limit: 1,
+      });
+      const threadTs = result.messages?.[0]?.thread_ts;
+      if (threadTs) {
+        session = getSession(channel, threadTs);
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
+  if (!session) return;
+
+  const updated = setSessionVerbose(channel, session.threadTs, true);
+  if (updated) {
+    console.log(`[Bridge] Verbose ON for session ${session.sessionId} (reaction removed by ${event.user})`);
+    await app.client.reactions.remove({ channel, timestamp: msgTs, name: VERBOSE_CONFIRM_EMOJI }).catch(() => {});
   }
 });
 

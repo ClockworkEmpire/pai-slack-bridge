@@ -10,6 +10,7 @@ export interface ClaudeOptions {
   model?: string;
   permissionMode?: string;
   desk?: DeskDefinition; // Desk context for routing
+  verbose?: boolean;     // Pass --verbose to Claude CLI (default: true)
 }
 
 export interface StreamEvent {
@@ -133,10 +134,12 @@ INBOUND FILES: When a user attaches files (images, PDFs, text), their local path
 --- END BRIDGE API ---
 ${deskContext}`;
 
+  const useVerbose = options.verbose !== false;
+
   const args = [
     '-p',
     '--output-format', 'stream-json',
-    '--verbose',
+    ...(useVerbose ? ['--verbose'] : []),
     '--model', options.model || 'sonnet',
     '--permission-mode', options.permissionMode || 'acceptEdits',
     '--settings', settingsPath,
@@ -157,10 +160,11 @@ ${deskContext}`;
   console.log(`[Claude] CWD: ${cwd}`);
   console.log(`[Claude] PAI_DIR: ${paiDir}`);
 
+  const { CLAUDECODE, ...cleanEnv } = process.env;
   const proc = spawn(['claude', ...args], {
     cwd,
     env: {
-      ...process.env,
+      ...cleanEnv,
       PAI_DIR: paiDir,  // Ensure PAI_DIR is set for hooks
     },
     stdout: 'pipe',

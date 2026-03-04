@@ -113,6 +113,7 @@ Scroll to **Scopes → Bot Token Scopes** and add:
 | `groups:history` | Read private channels |
 | `im:history` | Read DMs |
 | `im:write` | Send DMs |
+| `reactions:read` | Detect user reactions (verbose toggle) |
 | `reactions:write` | Add emoji reactions |
 
 ### 4. Enable Messages Tab
@@ -133,6 +134,8 @@ In the left sidebar: **Features → Event Subscriptions**
    - `message.channels` (public channels)
    - `message.groups` (private channels)
    - `app_mention` (@mentions)
+   - `reaction_added` (verbose toggle)
+   - `reaction_removed` (verbose toggle)
 3. Click **Save Changes**
 
 ### 6. Enable Interactivity
