@@ -1,12 +1,14 @@
 // Usage tracking service - rate limiting and cost control
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 import type { UsageRecord, UsageStore, ChannelUsage } from '../types/usage';
 import { EMPTY_USAGE_STORE } from '../types/usage';
 import type { ChannelConfig } from '../types/config';
 
-const PAI_DIR = process.env.PAI_DIR || `${process.env.HOME}/.claude`;
-const DATA_DIR = `${PAI_DIR}/bridge/data`;
-const USAGE_PATH = `${DATA_DIR}/usage.json`;
+const PAI_DIR = process.env.PAI_DIR || join(homedir(), '.claude');
+const DATA_DIR = join(PAI_DIR, 'bridge', 'data');
+const USAGE_PATH = join(DATA_DIR, 'usage.json');
 
 function ensureDataDir(): void {
   if (!existsSync(DATA_DIR)) {

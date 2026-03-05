@@ -1,9 +1,11 @@
 // Session manifest generator - creates boundary enforcement manifests
 import { writeFileSync, existsSync, mkdirSync, readFileSync, unlinkSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 import type { DeskDefinition, SessionManifest } from '../types/desk';
 
-const paiDir = process.env.PAI_DIR || `${process.env.HOME}/.claude`;
-const MANIFESTS_DIR = `${paiDir}/MEMORY/STATE/session-manifests`;
+const paiDir = process.env.PAI_DIR || join(homedir(), '.claude');
+const MANIFESTS_DIR = join(paiDir, 'MEMORY', 'STATE', 'session-manifests');
 
 // Ensure manifests directory exists
 if (!existsSync(MANIFESTS_DIR)) {
@@ -33,7 +35,7 @@ export function generateManifest(
  * Save a session manifest to disk
  */
 export function saveManifest(manifest: SessionManifest): string {
-  const filePath = `${MANIFESTS_DIR}/${manifest.session_id}.yaml`;
+  const filePath = join(MANIFESTS_DIR, `${manifest.session_id}.yaml`);
 
   // Format as YAML manually to avoid dependency
   const yaml = `# Auto-generated session manifest
@@ -63,7 +65,7 @@ ${manifest.blocked_paths.map(p => `  - "${p}"`).join('\n') || '  []'}
  * Load a session manifest from disk
  */
 export function loadManifest(sessionId: string): SessionManifest | null {
-  const filePath = `${MANIFESTS_DIR}/${sessionId}.yaml`;
+  const filePath = join(MANIFESTS_DIR, `${sessionId}.yaml`);
 
   if (!existsSync(filePath)) {
     return null;
@@ -121,7 +123,7 @@ export function loadManifest(sessionId: string): SessionManifest | null {
  * Delete a session manifest
  */
 export function deleteManifest(sessionId: string): boolean {
-  const filePath = `${MANIFESTS_DIR}/${sessionId}.yaml`;
+  const filePath = join(MANIFESTS_DIR, `${sessionId}.yaml`);
 
   if (!existsSync(filePath)) {
     return false;

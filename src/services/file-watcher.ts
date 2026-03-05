@@ -2,6 +2,7 @@
 import { watch, type FSWatcher } from 'fs';
 import { readdir, stat } from 'fs/promises';
 import { join, extname, basename } from 'path';
+import { homedir } from 'os';
 import { randomUUID } from 'crypto';
 import type { PendingFile } from '../types/files';
 import { getMimeType } from '../types/files';
@@ -216,10 +217,10 @@ let globalFileWatcher: FileWatcher | null = null;
  */
 export function getFileWatcher(): FileWatcher {
   if (!globalFileWatcher) {
-    const homeDir = process.env.HOME || '/tmp';
-    const downloadsDir = `${homeDir}/Downloads`;
-    const paiDir = process.env.PAI_DIR || `${homeDir}/.claude`;
-    const kbDir = `${paiDir}/kb`;
+    const homeDir = process.env.HOME || process.env.USERPROFILE || homedir();
+    const downloadsDir = join(homeDir, 'Downloads');
+    const paiDir = process.env.PAI_DIR || join(homeDir, '.claude');
+    const kbDir = join(paiDir, 'kb');
 
     globalFileWatcher = new FileWatcher({
       directories: [downloadsDir, kbDir],

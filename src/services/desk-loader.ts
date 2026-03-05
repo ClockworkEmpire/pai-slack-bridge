@@ -1,11 +1,12 @@
 // Desk definition loader - loads and caches YAML desk definitions
 import { readFileSync, existsSync, readdirSync, watch, type FSWatcher } from 'fs';
 import { join, basename } from 'path';
+import { homedir } from 'os';
 import { parse as parseYaml } from 'yaml';
 import type { DeskDefinition, DeskDefaults } from '../types/desk';
 
-const paiDir = process.env.PAI_DIR || `${process.env.HOME}/.claude`;
-const DESKS_DIR = `${paiDir}/MEMORY/desks`;
+const paiDir = process.env.PAI_DIR || join(homedir(), '.claude');
+const DESKS_DIR = join(paiDir, 'MEMORY', 'desks');
 
 // Cache for desk definitions
 let deskCache: Map<string, DeskDefinition> = new Map();
@@ -15,11 +16,11 @@ let watcher: FSWatcher | null = null;
 /**
  * Expand ~ to home directory in paths
  */
-function expandPath(path: string): string {
-  if (path.startsWith('~/')) {
-    return path.replace('~/', `${process.env.HOME}/`);
+function expandPath(p: string): string {
+  if (p.startsWith('~/')) {
+    return join(homedir(), p.slice(2));
   }
-  return path;
+  return p;
 }
 
 /**

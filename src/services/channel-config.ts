@@ -1,12 +1,13 @@
 // Channel configuration service - load/save channel configs
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { dirname } from 'path';
+import { dirname, join } from 'path';
+import { homedir } from 'os';
 import type { ChannelConfig, ChannelStore } from '../types/config';
 import { DEFAULT_CHANNEL_CONFIG } from '../types/config';
 
-const PAI_DIR = process.env.PAI_DIR || `${process.env.HOME}/.claude`;
-const DATA_DIR = `${PAI_DIR}/bridge/data`;
-const CONFIG_PATH = `${DATA_DIR}/channels.json`;
+const PAI_DIR = process.env.PAI_DIR || join(homedir(), '.claude');
+const DATA_DIR = join(PAI_DIR, 'bridge', 'data');
+const CONFIG_PATH = join(DATA_DIR, 'channels.json');
 
 function ensureDataDir(): void {
   if (!existsSync(DATA_DIR)) {

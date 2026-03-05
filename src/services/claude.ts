@@ -1,6 +1,8 @@
 // Claude CLI spawner: executes claude in headless mode and streams output
 import { spawn, type Subprocess } from 'bun';
 import { readFileSync, existsSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 import type { DeskDefinition } from '../types/desk';
 
 export interface ClaudeOptions {
@@ -52,10 +54,10 @@ export async function* executeClaudeStreaming(
   message: string,
   options: ClaudeOptions
 ): AsyncGenerator<StreamEvent> {
-  const paiDir = process.env.PAI_DIR || `${process.env.HOME}/.claude`;
+  const paiDir = process.env.PAI_DIR || join(homedir(), '.claude');
   const cwd = options.cwd || process.env.BRIDGE_DEFAULT_CWD || paiDir;
 
-  const settingsPath = `${paiDir}/settings.json`;
+  const settingsPath = join(paiDir, 'settings.json');
 
   // Build desk context if provided
   let deskContext = '';

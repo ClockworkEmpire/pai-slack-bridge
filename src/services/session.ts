@@ -1,6 +1,6 @@
 // Session manager: maps Slack threads to Claude Code sessions
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { dirname } from 'path';
+import { dirname, join } from 'path';
 import { randomUUID } from 'crypto';
 
 export interface SessionMapping {
@@ -18,8 +18,8 @@ interface SessionStore {
 }
 
 // Use BRIDGE_DATA_DIR or default to ./data relative to project
-const DATA_DIR = process.env.BRIDGE_DATA_DIR || `${dirname(dirname(Bun.main))}/data`;
-const SESSIONS_PATH = `${DATA_DIR}/sessions.json`;
+const DATA_DIR = process.env.BRIDGE_DATA_DIR || join(dirname(dirname(Bun.main)), 'data');
+const SESSIONS_PATH = join(DATA_DIR, 'sessions.json');
 
 // Ensure data directory exists
 if (!existsSync(DATA_DIR)) {

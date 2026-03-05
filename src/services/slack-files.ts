@@ -1,10 +1,12 @@
 // Download Slack file attachments to local temp directory for Claude processing
 import { mkdirSync, existsSync, unlinkSync, rmSync } from 'fs';
-import { extname } from 'path';
+import { extname, join } from 'path';
 import type { SlackFile } from '../types/slack';
 import { SUPPORTED_INBOUND_EXTENSIONS, MAX_INBOUND_FILE_SIZE } from '../types/slack';
 
-const TEMP_BASE = '/tmp/slack-bridge-files';
+import { tmpdir } from 'os';
+
+const TEMP_BASE = join(tmpdir(), 'slack-bridge-files');
 
 /**
  * Get the download URL for a Slack file.
@@ -57,7 +59,7 @@ export async function downloadSlackFile(
   }
 
   const url = getDownloadUrl(file);
-  const destPath = `${destDir}/${file.name}`;
+  const destPath = join(destDir, file.name);
 
   console.log(`[SlackFiles] Downloading ${file.name} from: ${url.slice(0, 80)}...`);
 
@@ -101,7 +103,7 @@ export async function downloadMessageFiles(
   sessionId: string,
   botToken: string
 ): Promise<{ paths: string[]; warnings: string[] }> {
-  const destDir = `${TEMP_BASE}/${sessionId}`;
+  const destDir = join(TEMP_BASE, sessionId);
   const paths: string[] = [];
   const warnings: string[] = [];
 
@@ -138,7 +140,7 @@ export function buildFilePrefix(paths: string[], warnings: string[]): string {
  * Clean up temp files for a session
  */
 export function cleanupSessionFiles(sessionId: string): void {
-  const dir = `${TEMP_BASE}/${sessionId}`;
+  const dir = join(TEMP_BASE, sessionId);
   try {
     if (existsSync(dir)) {
       rmSync(dir, { recursive: true, force: true });
