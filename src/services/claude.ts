@@ -13,6 +13,7 @@ export interface ClaudeOptions {
   permissionMode?: string;
   desk?: DeskDefinition; // Desk context for routing
   verbose?: boolean;     // Pass --verbose to Claude CLI (default: true)
+  useContinue?: boolean; // Use --continue instead of --resume (Windows workaround)
 }
 
 export interface StreamEvent {
@@ -149,7 +150,9 @@ ${deskContext}`;
   ];
 
   // Session handling: resume existing or start new with specific ID
-  if (options.resumeId) {
+  if (options.useContinue) {
+    args.push('--continue');
+  } else if (options.resumeId) {
     args.push('--resume', options.resumeId);
   } else if (options.sessionId) {
     args.push('--session-id', options.sessionId);

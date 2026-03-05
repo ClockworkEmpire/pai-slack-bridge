@@ -1,5 +1,5 @@
 // Handle incoming Slack messages
-import { getOrCreateSession, getSession, setSessionVerbose, updateSessionId } from '../services/session';
+import { getOrCreateSession, getSession, setSessionVerbose, updateSessionId, getThreadCwd } from '../services/session';
 import { executeClaudeStreaming, extractText, type StreamEvent, type ContentBlock } from '../services/claude';
 import { postMessage, addReaction, removeReaction, getToolEmoji, MessageUpdater, updateMessage } from '../services/slack';
 import { splitForSlack, markdownToSlack, stripSystemReminders } from '../lib/markdown-to-slack';
@@ -192,10 +192,14 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
     let askedQuestions = false; // Track if AskUserQuestion was posted (dedup across events)
 
     // Execute Claude and stream responses
+    const isWindows = process.platform === 'win32';
+    const threadCwd = getThreadCwd(channel, threadTs); // returns '' on non-Windows
     let claudeSessionId: string | undefined;
     for await (const event of executeClaudeStreaming(messageToSend, {
-      resumeId: isNew ? undefined : session.sessionId,
+      resumeId: isNew ? undefined : (isWindows ? undefined : session.sessionId),
       sessionId: isNew ? session.sessionId : undefined,
+      useContinue: !isNew && isWindows,
+      cwd: threadCwd || undefined,
       desk: primaryDesk || undefined,
       verbose,
     })) {
@@ -204,7 +208,8 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
         claudeSessionId = event.session_id;
         // Reconcile: update stored session if Claude Code assigned a different ID
         if (event.session_id !== session.sessionId) {
-          console.warn(`[Handler] Session ID mismatch! Bridge: ${session.sessionId}, Claude: ${event.session_id}`);
+          const logFn = isWindows ? console.log : console.warn;
+          logFn(`[Handler] Session ID mismatch (${process.platform}): Bridge: ${session.sessionId}, Claude: ${event.session_id}`);
           updateSessionId(channel, threadTs, event.session_id);
           session.sessionId = event.session_id; // Update local ref too
         }
